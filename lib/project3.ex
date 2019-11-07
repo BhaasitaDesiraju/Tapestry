@@ -3,25 +3,35 @@ defmodule Project3 do
 
   def main(args) do
 
-    #create nodeList
+    #Create nodeList
     numOfNodes = Enum.at(args, 0) |> String.to_integer()
     numOfRequests = Enum.at(args, 1) |> String.to_integer()
-
+    #Create Number of Nodes -1 nodes(actors)
+    numOfNodes = numOfNodes - 1
     nodeList = createNodes(numOfNodes)
 
-    table = :ets.new(:table, [:named_table, :public])
-    :ets.insert(table, {"hop_count", 0})
-
-    #hashtable - map nodeIds to GUIDs
-    #For each process id in the nodeList, create a hash value
+    #Map Nodes to GUIDS(For each process id in the nodeList, create a hash value)
     guidMap = createGUIDs(nodeList)
-    #For each GUID, get all the other GUIDs in the map
+    #List of all GUIDs
     guidList = Map.values(guidMap)
+    #Create Routing table for every node
     createRoutingTables(guidMap, guidList)
-    #For message routing -> for each node select a random destination and make
 
-    #Route messages and print Max Hops
-    maxHops = routeMsgToDestination(guidMap, guidList, numOfNodes, numOfRequests, [])
+    #For Dynamic node addition create a new node and allot it process ID
+    newNode = start_node()
+    newNumOfNodes = numOfNodes + 1
+    allotProcessId(newNode, newNumOfNodes)
+
+    # Add the new node to the list of Nodes
+    nodeList = nodeList ++ [newNode]
+    newNodeHash = :crypto.hash(:sha, to_string(newNumOfNodes-1)) |> Base.encode16 |> String.downcase |> String.slice(0..7)
+    guidMap = Map.put(guidMap, newNode, newNodeHash)
+    guidList = Map.values(guidMap)
+    #Update routing tables of every node with the dynamic node
+    updateRoutingTables(guidMap, guidList, newNodeHash)
+
+    # Route messages and print Max Hops
+    maxHops = routeMsgToDestination(guidMap, guidList, newNumOfNodes, numOfRequests, [])
     IO.puts("Max Hops = #{maxHops}")
   end
 
@@ -50,7 +60,44 @@ defmodule Project3 do
       processId = getProcessIdKey(guidMap, x)
       Project3.updateRoutingTable(processId, map)
     end)
+  end
 
+  def updateRoutingTables(guidMap, guidList, newNodeHash) do
+    #Create the dynamic node's routing table
+    routinglist = List.delete(guidList, newNodeHash)
+    routingTable = empty_map(8,16)
+    map = getRowMap(routinglist, newNodeHash, routingTable, 0)
+    newNodeProcessId = getProcessIdKey(guidMap, newNodeHash)
+    Project3.updateRoutingTable(newNodeProcessId, map)
+
+    #Update every nodes'routing table with respect to the dynamic node
+    hexEquivalent = %{"0"=>0, "1"=>1, "2"=>2, "3"=>3, "4"=>4, "5"=>5, "6"=>6, "7"=>7, "8"=>8, "9"=>9, "a"=>10, "b" =>11, "c"=>12, "d"=>13, "e"=>14, "f"=>15}
+    Enum.each(routinglist, fn x ->
+      sourceProcessId = getProcessIdKey(guidMap, x)
+      sourceRoutingTable = getRoutingTable(sourceProcessId)
+      #get the row based on the number of matching digits
+      matchingLevel =  Enum.find_index(0..7, fn i -> String.at(x, i) != String.at(newNodeHash, i) end)
+      placer = String.at(newNodeHash, matchingLevel)
+      #get the hcolumn based on the concerned digit of the node
+      column = hexEquivalent[placer]
+
+      value = Map.get(sourceRoutingTable, {matchingLevel,column})
+      value = if value == [] or nil do
+        value = [newNodeHash]
+      else
+        checker1 = hexEquivalent[String.at(newNodeHash, matchingLevel+1)]
+        checker2 = hexEquivalent[String.at(List.first(value), matchingLevel+1)]
+        sourceChecker = hexEquivalent[String.at(x, matchingLevel+1)]
+        if sourceChecker - checker1 < sourceChecker - checker2 do
+          value = [newNodeHash]
+        else
+          value
+        end
+      end
+
+      sourceRoutingTable = Map.put(sourceRoutingTable, {matchingLevel, column}, value)
+      Project3.updateRoutingTable(sourceProcessId, sourceRoutingTable)
+    end)
   end
 
   def getProcessIdKey(map, value) when value != nil do
@@ -64,7 +111,7 @@ defmodule Project3 do
     #filter list to get values matching with source node
     filter = String.slice(sourceNode, 0, level+1)
     newList = getNewList(list, filter,level+1, [])
-    #self call and increase level
+    #Iterate recursively for every row of the routing table
     getRowMap(newList, sourceNode, map, level+1)
   end
 
@@ -74,9 +121,8 @@ defmodule Project3 do
 
   def getNewList(list, filter, level, newList) when list != [] or nil do
     [head | tail] = list
-    # regex = Regex.compile(filter) |> Tuple.to_list |> Enum.at(1)
+    #Get the matching digits for sorting the nodes in their respective rows
     regex = String.slice(head, 0, level)
-    # newList = []
     newList = if regex == filter do
       newList = newList ++ [head]
     else
@@ -89,17 +135,16 @@ defmodule Project3 do
     newList
   end
 
-  #Column Map when list is not empty
   def getColumnMap(list, map, row, sourceNode) when list != [] or nil do
+    #Iterate through every node in the routing nodelist
     [head | tail] = list
     hexEquivalent = %{"0"=>0, "1"=>1, "2"=>2, "3"=>3, "4"=>4, "5"=>5, "6"=>6, "7"=>7, "8"=>8, "9"=>9, "a"=>10, "b" =>11, "c"=>12, "d"=>13, "e"=>14, "f"=>15}
-    #head and compare it with the source node and place it in  the map
+    #compare the current node with the source node and place it in the routing table
     placer = String.at(head, row)
-    #get the hexEquivalent of placer - y
     column = hexEquivalent[placer]
-    #update map {row, y} with head
+    #update the routing table of the sourec node with the current node
     value = Map.get(map, {row,column})
-    # value = value ++ [head]
+
     value = if value == [] or nil do
       value = [head]
     else
@@ -114,16 +159,11 @@ defmodule Project3 do
     end
 
     map = Map.put(map, {row, column}, value)
-    #If there is one digit matching, place it in the correspoding position of the map
-    #recursively call getMap with the updated list
     getColumnMap(tail, map, row, sourceNode)
-    #until list is empty
-    #when list is empty-return the map
   end
 
-  #Column Map when list is empty
+  #return Column Map when routinglist is empty
   def getColumnMap(list, map, row, sourceNode) do
-    #when list is empty-return the map
     map
   end
 
@@ -135,12 +175,11 @@ defmodule Project3 do
     end)
   end
 
+  #recursively send messages for 'number of requests' times
   def routeMsgToDestination(guidMap, guidList, numOfNodes, numOfRequests, maxHopsList) when numOfRequests != 0 do
-    #for each node(process Id) in guidMap, select a random destination node
     hopsList = []
     maxHops = iterateGUIDList(guidList, guidList, hopsList, guidMap, numOfNodes)
     maxHopsList = maxHopsList ++ [maxHops]
-    # IO.inspect(maxHopsList)
     Process.sleep(1000)
     routeMsgToDestination(guidMap, guidList, numOfNodes, numOfRequests-1, maxHopsList)
   end
@@ -180,10 +219,6 @@ defmodule Project3 do
     maxHops
   end
 
-  #Get routing path gets an intermediate node until that is equal to dest
-  #when it's equal to destination - same func will update hop count
-  #else it'll keep calling itself until source == destination
-
   def getRoutingPath(sourceNode, destinationNode, guidMap) do
     destNodeLength = String.length(destinationNode)
     getIntermediateNode(sourceNode, "", destinationNode, guidMap, 0, destNodeLength)
@@ -192,21 +227,28 @@ defmodule Project3 do
   def getIntermediateNode(sourceNode, intermediateNode, destinationNode, guidMap, row, destNodeLength) when row < destNodeLength and intermediateNode == "" or nil do
     sourceProcessId = getProcessIdKey(guidMap, sourceNode)
     sourceRoutingTable = getRoutingTable(sourceProcessId)
+
     hexEquivalent = %{"0"=>0, "1"=>1, "2"=>2, "3"=>3, "4"=>4, "5"=>5, "6"=>6, "7"=>7, "8"=>8, "9"=>9, "a"=>10, "b" =>11, "c"=>12, "d"=>13, "e"=>14, "f"=>15}
     column = hexEquivalent[String.at(destinationNode, row)]
     intermediateNode = List.first(Map.get(sourceRoutingTable, {row,column}))
-    # IO.inspect(intermediateNode)
-    checkIntermediateNode(sourceNode, intermediateNode, destinationNode, guidMap, row, destNodeLength)
+
+    if intermediateNode != nil do
+      checkIntermediateNode(sourceNode, intermediateNode, destinationNode, guidMap, row, destNodeLength)
+    end
+
   end
 
   def getIntermediateNode(sourceNode, intermediateNode, destinationNode, guidMap, row, destNodeLength) when row < destNodeLength and intermediateNode != "" or nil do
     intermediateProcessId = getProcessIdKey(guidMap, intermediateNode)
     intermediateRoutingTable = getRoutingTable(intermediateProcessId)
+
     hexEquivalent = %{"0"=>0, "1"=>1, "2"=>2, "3"=>3, "4"=>4, "5"=>5, "6"=>6, "7"=>7, "8"=>8, "9"=>9, "a"=>10, "b" =>11, "c"=>12, "d"=>13, "e"=>14, "f"=>15}
     column = hexEquivalent[String.at(destinationNode, row)]
     intermediateNode = List.first(Map.get(intermediateRoutingTable, {row,column}))
-    # IO.inspect(intermediateNode)
-    checkIntermediateNode(sourceNode, intermediateNode, destinationNode, guidMap, row, destNodeLength)
+
+    if intermediateNode != nil do
+      checkIntermediateNode(sourceNode, intermediateNode, destinationNode, guidMap, row, destNodeLength)
+    end
   end
 
   def checkIntermediateNode(sourceNode, intermediateNode, destinationNode, guidMap, row, destNodeLength) when intermediateNode != destinationNode do

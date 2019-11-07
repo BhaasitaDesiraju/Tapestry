@@ -56,7 +56,7 @@ defmodule Project3Test do
   #    }, 0) == %{}
   # end
 
-  test "main" do
-    assert Project3.main(["100", "10"]) == "hello"
-  end
+  # test "main" do
+  #   assert Project3.main(["100", "10"]) == "hello"
+  # end
 end
